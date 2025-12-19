@@ -34,6 +34,23 @@ class MotorParameters:
     load_torque: float = 50.0  # N⋅m
 
 
+@dataclass
+class SinglePhaseTestData:
+    """Store single-phase motor test data for double revolving field analysis"""
+
+    power_hp: float = 1.0
+    voltage: float = 120.0
+    frequency: float = 60.0
+    rated_speed_rpm: float = 1730.0
+    stator_resistance: float = 2.9
+    blocked_voltage: float = 43.0
+    blocked_current: float = 5.0
+    blocked_power: float = 140.0
+    no_load_voltage: float = 120.0
+    no_load_current: float = 3.5
+    no_load_power: float = 125.0
+
+
 class InductionMotorCalculator:
     """Calculation engine for induction motor analysis"""
 
@@ -185,6 +202,75 @@ class InductionMotorCalculator:
         return max(0, min(100, efficiency))
 
 
+class SinglePhaseMotorCalculator:
+    """Analysis helper for single-phase induction motors"""
+
+    def __init__(self, data: SinglePhaseTestData):
+        self.data = data
+
+    def double_revolving_field_equivalent(self) -> dict:
+        """Compute the double revolving field equivalent circuit values"""
+        Z_blocked = self.data.blocked_voltage / self.data.blocked_current
+        R_blocked = self.data.blocked_power / (self.data.blocked_current**2)
+        X_blocked = math.sqrt(max(Z_blocked**2 - R_blocked**2, 0))
+
+        # Split the blocked rotor impedance equally for forward and backward fields
+        R_forward = R_blocked / 2
+        X_forward = X_blocked / 2
+        R_backward = R_forward
+        X_backward = X_forward
+
+        slip = (120 * self.data.frequency / 2 - self.data.rated_speed_rpm) / (120 * self.data.frequency / 2)
+        slip = max(0.0, slip)
+
+        return {
+            'Z_blocked': Z_blocked,
+            'R_blocked': R_blocked,
+            'X_blocked': X_blocked,
+            'R_forward': R_forward,
+            'X_forward': X_forward,
+            'R_backward': R_backward,
+            'X_backward': X_backward,
+            'slip': slip,
+        }
+
+    def performance_from_tests(self) -> dict:
+        """Estimate key metrics from no-load and blocked-rotor data"""
+        eq = self.double_revolving_field_equivalent()
+
+        # Rotational loss from no-load test
+        stator_cu_loss_nl = (self.data.no_load_current**2) * self.data.stator_resistance
+        rotational_loss = max(self.data.no_load_power - stator_cu_loss_nl, 0)
+
+        # Mechanical output power
+        output_power_w = self.data.power_hp * 746
+        mechanical_power = output_power_w + rotational_loss
+
+        slip = eq['slip'] if eq['slip'] > 0 else 0.001
+        rotor_cu_loss = slip / (1 - slip) * mechanical_power
+        airgap_power = mechanical_power + rotor_cu_loss
+
+        # Rough input estimation including stator copper at rated current
+        rated_stator_cu = (self.data.blocked_current**2) * self.data.stator_resistance * slip
+        input_power = airgap_power + rated_stator_cu
+        power_factor = input_power / (self.data.voltage * self.data.blocked_current) if self.data.voltage else 0
+
+        omega_sync = 4 * math.pi * self.data.frequency / 2
+        developed_torque = airgap_power / omega_sync if omega_sync else 0
+
+        return {
+            **eq,
+            'rotational_loss': rotational_loss,
+            'mechanical_power': mechanical_power,
+            'airgap_power': airgap_power,
+            'rotor_cu_loss': rotor_cu_loss,
+            'input_power': input_power,
+            'input_current': self.data.blocked_current,
+            'power_factor': max(0, min(1, power_factor)),
+            'developed_torque': developed_torque,
+        }
+
+
 class DynamicSimulator:
     """Real-time ODE solver for dynamic motor simulation"""
 
@@ -314,6 +400,8 @@ class InductionMotorGUI:
         self.params = MotorParameters()
         self.calculator = InductionMotorCalculator(self.params)
         self.simulator = DynamicSimulator(self.params)
+        self.single_phase_data = SinglePhaseTestData()
+        self.single_phase_calc = SinglePhaseMotorCalculator(self.single_phase_data)
 
         # Simulation control
         self.is_running = False
@@ -375,6 +463,11 @@ class InductionMotorGUI:
         self.params_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.params_frame, text="Motor Parameters")
         self.create_parameters_tab()
+
+        # Tab 4: Advanced / Single-Phase Analysis
+        self.advanced_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.advanced_frame, text="Advanced Analysis")
+        self.create_advanced_tab()
 
     def create_static_analysis_tab(self):
         """Create static analysis tab"""
@@ -552,6 +645,24 @@ class InductionMotorGUI:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+    def create_advanced_tab(self):
+        """Create advanced analysis tab for educational content and single-phase testing"""
+        self.advanced_frame.columnconfigure(0, weight=1)
+        self.advanced_frame.columnconfigure(1, weight=1)
+        self.advanced_frame.rowconfigure(0, weight=1)
+
+        theory_frame = ttk.LabelFrame(self.advanced_frame, text="Conceptual Reference", padding=10)
+        theory_frame.grid(row=0, column=0, sticky='nsew', padx=5, pady=5)
+
+        self.theory_text = scrolledtext.ScrolledText(theory_frame, width=60, height=35, wrap=tk.WORD)
+        self.theory_text.pack(fill='both', expand=True)
+        self.populate_theory_notes()
+
+        analysis_frame = ttk.LabelFrame(self.advanced_frame, text="Single-Phase Lab Bench", padding=10)
+        analysis_frame.grid(row=0, column=1, sticky='nsew', padx=5, pady=5)
+
+        self.build_single_phase_inputs(analysis_frame)
+
     def create_slider(self, parent, label, from_, to, initial, command, resolution=1):
         """Create a labeled slider"""
         frame = ttk.Frame(parent)
@@ -575,6 +686,92 @@ class InductionMotorGUI:
         self.calculator = InductionMotorCalculator(self.params)
         self.simulator = DynamicSimulator(self.params)
         messagebox.showinfo("Success", "Calculator updated with new parameters!")
+
+    def populate_theory_notes(self):
+        """Insert explanatory content for single-phase motor families"""
+        notes = """
+SINGLE-PHASE MOTOR REFERENCE
+----------------------------
+
+1) Capacitor-Start Motor
+   • Auxiliary winding with series capacitor engaged only for starting.
+   • Produces strong starting torque (≈200–300% of rated).
+   • Torque-speed: high pull-out, disconnects near 70–80% synchronous speed.
+   Diagram (conceptual):
+      ┌────────────┐
+      │ Main Wdg   │───────┐
+      └────────────┘       │
+      ┌────────────┐   ┌───▼───┐
+      │ Aux Wdg    │──▶│Capacitor│
+      └────────────┘   └───────┘
+
+2) Capacitor-Run Motor
+   • Capacitor permanently in series with auxiliary winding.
+   • Smoother torque, better power factor and efficiency.
+   • Torque-speed: moderate starting torque, flatter curve at low slip.
+
+3) Shaded-Pole Motor
+   • Copper shading ring on part of each pole creates phase shift.
+   • Very low starting torque, simple and rugged; used for fans/clocks.
+   Diagram (conceptual):
+      ┌─────────────┐
+      │ Shaded Pole │╺━╸ Copper ring
+      └─────────────┘
+
+TORQUE-SPEED NOTES
+------------------
+• Capacitor-Start: steep rise then disconnect of aux winding; good breakaway torque.
+• Capacitor-Run: smoother rise, smaller dip at mid-slip; suitable for continuous duty.
+• Shaded-Pole: shallow curve, stall torque only slightly above rated load.
+
+DOUBLE REVOLVING FIELD EQUIVALENT
+---------------------------------
+• Single-phase stator mmf is modeled as two equal counter-rotating fields.
+• Blocked-rotor test gives total R and X → split into forward/backward branches.
+• Forward field drives the rotor; backward field subtracts torque at low speed.
+• Use no-load test to extract rotational loss and magnetizing requirements.
+"""
+        self.theory_text.delete('1.0', tk.END)
+        self.theory_text.insert(tk.END, notes)
+
+    def build_single_phase_inputs(self, parent):
+        """Create input widgets for the single-phase test bench"""
+        input_frame = ttk.Frame(parent)
+        input_frame.pack(fill='x', pady=5)
+
+        entries = [
+            ('Power (HP)', 'power_hp'),
+            ('Voltage (V)', 'voltage'),
+            ('Frequency (Hz)', 'frequency'),
+            ('Rated Speed (RPM)', 'rated_speed_rpm'),
+            ('Stator Resistance (Ω)', 'stator_resistance'),
+            ('Blocked Voltage (V)', 'blocked_voltage'),
+            ('Blocked Current (A)', 'blocked_current'),
+            ('Blocked Power (W)', 'blocked_power'),
+            ('No-Load Voltage (V)', 'no_load_voltage'),
+            ('No-Load Current (A)', 'no_load_current'),
+            ('No-Load Power (W)', 'no_load_power'),
+        ]
+
+        self.sp_entries = {}
+        row = 0
+        for label, attr in entries:
+            ttk.Label(input_frame, text=label + ':', width=22).grid(row=row, column=0, sticky='w', pady=2)
+            entry = ttk.Entry(input_frame, width=12)
+            entry.insert(0, str(getattr(self.single_phase_data, attr)))
+            entry.grid(row=row, column=1, sticky='w', pady=2)
+            self.sp_entries[attr] = entry
+            row += 1
+
+        button_frame = ttk.Frame(parent)
+        button_frame.pack(fill='x', pady=5)
+
+        ttk.Button(button_frame, text="Compute Equivalent Circuit", command=self.show_single_phase_results).pack(side='left', padx=2)
+        ttk.Button(button_frame, text="Plot Torque-Speed Families", command=self.show_single_phase_curves).pack(side='left', padx=2)
+        ttk.Button(button_frame, text="Plot Double Field Diagram", command=self.show_double_field_plot).pack(side='left', padx=2)
+
+        self.single_phase_results = scrolledtext.ScrolledText(parent, width=60, height=15, wrap=tk.WORD)
+        self.single_phase_results.pack(fill='both', expand=True, pady=5)
 
     def calculate_static_parameters(self):
         """Calculate and display static motor parameters"""
@@ -655,6 +852,91 @@ class InductionMotorGUI:
 
         except Exception as e:
             messagebox.showerror("Error", f"Calculation error: {str(e)}")
+
+    def update_single_phase_data(self):
+        """Read UI values into the single-phase data object"""
+        for attr, entry in self.sp_entries.items():
+            try:
+                setattr(self.single_phase_data, attr, float(entry.get()))
+            except ValueError:
+                messagebox.showerror("Input Error", f"Invalid value for {attr}")
+                raise
+        self.single_phase_calc = SinglePhaseMotorCalculator(self.single_phase_data)
+
+    def show_single_phase_results(self):
+        """Display double revolving field equivalent and performance"""
+        try:
+            self.update_single_phase_data()
+        except ValueError:
+            return
+
+        eq = self.single_phase_calc.double_revolving_field_equivalent()
+        perf = self.single_phase_calc.performance_from_tests()
+
+        lines = [
+            "DOUBLE REVOLVING FIELD EQUIVALENT",
+            "----------------------------------",
+            f"Total blocked impedance:  {eq['Z_blocked']:.2f} Ω",
+            f"Blocked resistance:       {eq['R_blocked']:.2f} Ω",
+            f"Blocked reactance:        {eq['X_blocked']:.2f} Ω",
+            f"Forward branch (R+jX):    {eq['R_forward']:.2f} + j{eq['X_forward']:.2f} Ω",
+            f"Backward branch (R+jX):   {eq['R_backward']:.2f} + j{eq['X_backward']:.2f} Ω",
+            "",
+            "PERFORMANCE FROM TESTS",
+            "----------------------",
+            f"Slip at rated speed:      {perf['slip']*100:.2f} %",
+            f"Rotational loss:          {perf['rotational_loss']:.2f} W",
+            f"Air-gap power:            {perf['airgap_power']:.2f} W",
+            f"Rotor copper loss:        {perf['rotor_cu_loss']:.2f} W",
+            f"Developed torque:         {perf['developed_torque']:.2f} N·m",
+            f"Estimated input power:    {perf['input_power']:.2f} W",
+            f"Input current (approx):   {perf['input_current']:.2f} A",
+            f"Estimated power factor:   {perf['power_factor']:.2f}",
+        ]
+
+        self.single_phase_results.delete('1.0', tk.END)
+        self.single_phase_results.insert(tk.END, "\n".join(lines))
+
+    def show_single_phase_curves(self):
+        """Plot representative torque-speed curves for three motor types"""
+        speed = np.linspace(0, 1800, 200)
+        slip = 1 - speed / 1800
+        slip = np.clip(slip, 0, 1)
+
+        # Simple synthetic curves for illustration
+        T_cs = 2.5 * (slip / (0.2 + slip))  # Capacitor start
+        T_cr = 1.8 * (slip / (0.3 + slip))  # Capacitor run
+        T_sp = 0.8 * (slip / (0.6 + slip))  # Shaded pole
+
+        fig, ax = plt.subplots(figsize=(9, 6))
+        ax.plot(speed, T_cs, label='Capacitor Start', linewidth=2)
+        ax.plot(speed, T_cr, label='Capacitor Run', linewidth=2)
+        ax.plot(speed, T_sp, label='Shaded Pole', linewidth=2)
+        ax.axvline(x=self.single_phase_data.rated_speed_rpm, color='k', linestyle='--', label='Rated Speed')
+        ax.set_xlabel('Speed (RPM)')
+        ax.set_ylabel('Per-Unit Torque (scaled)')
+        ax.set_title('Representative Torque-Speed Characteristics')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        plt.show()
+
+    def show_double_field_plot(self):
+        """Plot a bar visual of forward/backward field contributions"""
+        try:
+            self.update_single_phase_data()
+        except ValueError:
+            return
+
+        eq = self.single_phase_calc.double_revolving_field_equivalent()
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.bar(['Forward Field', 'Backward Field'], [eq['R_forward'], eq['R_backward']],
+               color=['tab:blue', 'tab:orange'])
+        ax.set_ylabel('Equivalent Resistance (Ω)')
+        ax.set_title('Double Revolving Field Split (Resistance Portion)')
+        ax.grid(axis='y', alpha=0.3)
+        fig.tight_layout()
+        plt.show()
 
     def show_torque_speed_curve(self):
         """Display torque-speed characteristic curve"""
@@ -872,6 +1154,10 @@ and practical motor analysis.
         """Handle window resize for auto-scaling"""
         if hasattr(self, 'canvas'):
             # Redraw canvas to fit new size
+            try:
+                self.fig.tight_layout(pad=2.0)
+            except Exception:
+                pass
             self.canvas.draw()
 
 
