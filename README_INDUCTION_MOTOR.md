@@ -48,6 +48,49 @@ Output Torque = 15,218.4 / 182.85
 **Output Torque = 83.24 N⋅m**
 ```
 
+## Single-Phase Motor Reference
+
+### Capacitor-Start, Capacitor-Run, and Shaded-Pole Motors
+
+```
+Capacitor-Start (high starting torque)
+┌────────────┐           ┌─────────┐
+│ Main Wdg   │──────────▶│  Supply │
+└────────────┘           └─────────┘
+┌────────────┐   ┌──────┐
+│ Aux Wdg    │──▶│  C   │  Capacitor only in the start circuit
+└────────────┘   └──────┘
+
+Capacitor-Run (smooth torque, PF improvement)
+Main and auxiliary windings remain energized with a permanent capacitor.
+
+Shaded Pole (very simple, low starting torque)
+┌─────────────┐
+│  Pole Core  │╺━╸ Copper shading ring
+└─────────────┘
+```
+
+**Torque–speed characteristics:**
+- Capacitor-Start: steep initial torque, pull-out torque around 200–300% of rated, auxiliary winding opens near 70–80% of synchronous speed.
+- Capacitor-Run: moderate starting torque, flatter torque in the running region, good efficiency and power factor.
+- Shaded-Pole: shallow curve with stall torque only slightly above load torque; intended for fractional horsepower loads.
+
+### Double Revolving Field Equivalent Circuit (from tests)
+
+Given 1 HP, 120 V, 60 Hz, 1730 rpm motor
+- Main resistance: 2.9 Ω
+- Blocked-rotor test: V=43 V, I=5 A, P=140 W → R_BR=5.60 Ω, |Z_BR|=8.60 Ω, X_BR≈6.53 Ω
+- No-load test: V=120 V, I=3.5 A, P=125 W → stator Cu ≈35.5 W, rotational loss ≈89.5 W
+
+Forward/backward branch split (half of blocked values):
+- R_f ≈ 2.80 Ω, X_f ≈ 3.27 Ω for both forward and backward fields.
+
+At rated slip s≈3.9%:
+- Rotor Cu loss ≈ 33.8 W
+- Air-gap power ≈ 869 W
+- Developed torque ≈ 4.6 N·m
+- Estimated power factor ≈ 0.84 (using test currents and voltage)
+
 ## Features
 
 ### 1. User Interface (Tkinter GUI)
