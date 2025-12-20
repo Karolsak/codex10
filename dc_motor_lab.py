@@ -103,6 +103,32 @@ class DCMotorModel:
             lost_torque=lost_torque,
         )
 
+    @staticmethod
+    def solve_textbook_shunt_case():
+        """Solve the requested 4-pole shunt motor example.
+
+        The motor takes 22 A from a 220 V supply, has 0.5 Ω armature resistance,
+        100 Ω shunt field, 300 lap-connected conductors, and 20 mWb/pole.
+        Returns speed (rpm) and developed torque (N·m).
+        """
+
+        supply_voltage = 220.0
+        total_current = 22.0
+        armature_resistance = 0.5
+        shunt_resistance = 100.0
+        poles = 4
+        conductors = 300
+        flux = 0.02  # 20 mWb
+        paths = poles  # lap wound
+
+        field_current = supply_voltage / shunt_resistance
+        armature_current = total_current - field_current
+        back_emf = supply_voltage - armature_current * armature_resistance
+
+        speed_rpm = 60 * paths * back_emf / (poles * flux * conductors)
+        torque_nm = (poles * conductors * flux * armature_current) / (2 * math.pi * paths)
+        return speed_rpm, torque_nm
+
     def state_derivative(self, t: float, state: np.ndarray, supply: float, load_torque: float) -> np.ndarray:
         # state[0] = armature current (A)
         # state[1] = angular speed (rad/s)
@@ -191,6 +217,7 @@ class DCMotorLabApp(tk.Tk):
         self._build_layout()
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
+        self.bind("<Configure>", self._on_resize)
 
     def _build_layout(self):
         self._build_calculator_tab()
@@ -207,7 +234,7 @@ class DCMotorLabApp(tk.Tk):
 
         inputs_frame = ttk.LabelFrame(tab, text="Input Parameters")
         outputs_frame = ttk.LabelFrame(tab, text="Calculated Results")
-        controls_frame = ttk.LabelFrame(tab, text="Controls")
+        controls_frame = ttk.LabelFrame(tab, text="Controls & Solved Example")
 
         inputs_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         outputs_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
@@ -248,21 +275,36 @@ class DCMotorLabApp(tk.Tk):
         reset_button = ttk.Button(controls_frame, text="Reset", command=self._reset_inputs)
         reset_button.grid(row=0, column=1, padx=5, pady=5, sticky="w")
 
+        example_button = ttk.Button(
+            controls_frame, text="Load Textbook Case", command=self._apply_textbook_case
+        )
+        example_button.grid(row=0, column=2, padx=5, pady=5, sticky="w")
+
         self._create_sliders(controls_frame)
-        controls_frame.columnconfigure(2, weight=1)
+        controls_frame.columnconfigure(4, weight=1)
+
+        example_speed, example_torque = DCMotorModel.solve_textbook_shunt_case()
+        ttk.Label(
+            controls_frame,
+            text=(
+                f"Solved example (4-pole shunt, 220 V/22 A):\n"
+                f"Speed ≈ {example_speed:.0f} rpm | Torque ≈ {example_torque:.2f} N·m"
+            ),
+            justify="left",
+        ).grid(row=2, column=0, columnspan=5, sticky="w", padx=5, pady=5)
 
     def _create_sliders(self, frame: ttk.Frame):
-        ttk.Label(frame, text="Adjust Supply Voltage").grid(row=0, column=2, sticky="w")
+        ttk.Label(frame, text="Adjust Supply Voltage").grid(row=1, column=0, sticky="w")
         self.supply_slider = tk.Scale(frame, from_=180, to=260, orient=tk.HORIZONTAL, resolution=1,
                                       command=self._update_supply_from_slider)
         self.supply_slider.set(self.inputs.supply_voltage)
-        self.supply_slider.grid(row=0, column=3, sticky="ew")
+        self.supply_slider.grid(row=1, column=1, sticky="ew")
 
-        ttk.Label(frame, text="Adjust Load Torque").grid(row=1, column=2, sticky="w")
+        ttk.Label(frame, text="Adjust Load Torque").grid(row=2, column=0, sticky="w")
         self.load_slider = tk.Scale(frame, from_=0, to=20, orient=tk.HORIZONTAL, resolution=0.5,
                                     command=self._update_load_from_slider)
         self.load_slider.set(self.inputs.load_torque)
-        self.load_slider.grid(row=1, column=3, sticky="ew")
+        self.load_slider.grid(row=2, column=1, sticky="ew")
 
     def _update_supply_from_slider(self, value: str):
         self.input_vars["supply_voltage"].set(value)
@@ -283,6 +325,24 @@ class DCMotorLabApp(tk.Tk):
             label.config(text="-")
         self.model = DCMotorModel(self.inputs)
         self.engine = SimulationEngine(self.model)
+
+    def _apply_textbook_case(self):
+        """Populate fields with the provided 4-pole shunt motor test case and solve it."""
+
+        example_inputs = {
+            "poles": 4,
+            "conductors": 300,
+            "flux_per_pole_wb": 0.02,
+            "speed_rpm": 2100.0,
+            "supply_voltage": 220.0,
+            "armature_resistance": 0.5,
+        }
+        for key, value in example_inputs.items():
+            self.input_vars[key].set(str(value))
+        self.inputs.load_torque = 10.0
+        self.supply_slider.set(example_inputs["supply_voltage"])
+        self.load_slider.set(self.inputs.load_torque)
+        self._on_compute()
 
     def _on_compute(self):
         try:
@@ -408,7 +468,8 @@ class DCMotorLabApp(tk.Tk):
             "- Real-time differential equations using adjustable integrators (RK45 or Euler).\n"
             "- Lap wound parallel paths assumed equal to number of poles.\n"
             "- Torque constant multiplies with flux to estimate electromagnetic torque.\n"
-            "- Vary inductance, friction, and inertia for practical what-if studies."
+            "- Vary inductance, friction, and inertia for practical what-if studies.\n"
+            "- Textbook shunt-motor case solved automatically for quick validation."
         )
         ttk.Label(tab, text=info, justify="left").grid(row=0, column=0, sticky="w", padx=10, pady=10)
 
@@ -430,13 +491,49 @@ class DCMotorLabApp(tk.Tk):
             entry.grid(row=idx, column=1, sticky="ew", padx=5, pady=5)
             entry.bind("<FocusOut>", lambda e, key=attr, v=var: self._update_advanced(key, v))
 
+        eq_frame = ttk.LabelFrame(tab, text="Dynamic Equations & Time Constants")
+        eq_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
+        eq_frame.grid_columnconfigure(0, weight=1)
+
+        equations = (
+            "Electrical: L di/dt = V - E_b - R_a i,  E_b = k_e ω\n"
+            "Mechanical: J dω/dt = k_t Φ i - T_load - B ω\n"
+            "Torque: T = k_t Φ i_a   |   Speed: n = 60 ω / (2π)"
+        )
+        self.eq_label = ttk.Label(eq_frame, text=equations, justify="left")
+        self.eq_label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
+
+        self.time_constants_var = tk.StringVar()
+        ttk.Label(eq_frame, textvariable=self.time_constants_var, justify="left").grid(
+            row=1, column=0, sticky="w", padx=5, pady=5
+        )
+        self._update_time_constants()
+
     def _update_advanced(self, key: str, var: tk.DoubleVar):
         try:
             setattr(self.inputs, key, float(var.get()))
             self.model = DCMotorModel(self.inputs)
             self.engine = SimulationEngine(self.model)
+            self._update_time_constants()
         except ValueError:
             messagebox.showerror("Input error", "Advanced parameter must be numeric")
+
+    def _update_time_constants(self):
+        electrical_tau = self.inputs.inductance / self.inputs.armature_resistance
+        mechanical_tau = self.inputs.mechanical_inertia / max(self.inputs.viscous_friction, 1e-6)
+        self.time_constants_var.set(
+            f"Electrical τ ≈ {electrical_tau:.4f} s | Mechanical τ ≈ {mechanical_tau:.4f} s"
+        )
+
+    def _on_resize(self, event):
+        width = max(self.winfo_width(), 900)
+        height = max(self.winfo_height(), 700)
+        # Keep the matplotlib figure responsive to window changes
+        if hasattr(self, "fig"):
+            self.fig.set_size_inches(width / 180, height / 240, forward=True)
+            self.fig.tight_layout()
+            if hasattr(self, "canvas"):
+                self.canvas.draw_idle()
 
 
 if __name__ == "__main__":
